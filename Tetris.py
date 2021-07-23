@@ -123,6 +123,7 @@ PIECES = {'S': S_SHAPE_TEMPLATE,
           'I': I_SHAPE_TEMPLATE,
           'O': O_SHAPE_TEMPLATE,
           'T': T_SHAPE_TEMPLATE}
+
 PIECES_IND = {'S': 0,
               'Z': 1,
               'J': 2,
@@ -130,6 +131,14 @@ PIECES_IND = {'S': 0,
               'I': 4,
               'O': 5,
               'T': 6}
+
+PIECES_MARGINS = {'S': [[1,1],[0,1]],
+                  'Z': [[1,1],[1,0]],
+                  'J': [[1,1],[0,1],[1,1],[1,0]],
+                  'L': [[1,1],[0,1],[1,1],[1,0]],
+                  'I': [[0,0],[2,1]],
+                  'O': [[1,0]],
+                  'T': [[1,1],[0,1],[1,1],[1,0]]}
 
 class Tetris:
     def __init__(self):
@@ -210,7 +219,10 @@ class Tetris:
             and if the game has finished.
 
         """
-        x, rotation = action // 4, action % 4
+        rotation = action % 4
+        left_margin, right_margin = PIECES_MARGINS[self.current_piece][rotation % len(PIECES_MARGINS[self.current_piece])]
+        x = max(left_margin, min(action // 4, BOARD_WIDTH - right_margin - 1))
+
         for y in range(BOARD_HEIGHT):
             if self.isValidPosition(x, y, rotation):
                 self.placeOnBoard(x, y, rotation)
