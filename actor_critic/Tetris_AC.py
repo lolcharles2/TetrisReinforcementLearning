@@ -244,7 +244,7 @@ class Tetris:
             lines_cleared = self.clearLines()
             #delta_r, delta_c = self.countHoles()
             #reward = (lines_cleared**2/16 - delta_r/(BOARD_HEIGHT*BOARD_WIDTH) - delta_c/(BOARD_HEIGHT*BOARD_WIDTH))/2
-            reward = lines_cleared ** 2 / 16
+            reward = 0.1 + (lines_cleared+1) ** 2
 
             self.current_piece = self.getNewPiece()
             next_state = self.convertToFeatures()
@@ -311,7 +311,7 @@ class Tetris:
 
         """
         for x in range(BOARD_WIDTH):
-            if not self.board[x][y]: return False
+            if self.board[x][y] == 0.0: return False
         return True
 
     def convertToFeatures(self):
@@ -400,6 +400,7 @@ class Agent:
             action_probs = self.NN_pi(state).detach().cpu().numpy()
             action_probs = action_probs.astype('float64')  # More precision for normalization
             action_probs /= action_probs.sum()  # Normalize probabilities so it sums closer to 1
+            print(action_probs)
             return np.random.choice(range(len(action_probs)), p=action_probs)
 
     def initializeActorTrace(self):
@@ -608,23 +609,23 @@ if __name__ == "__main__":
     # Network parameters
     input_size = len(PIECES) + 2 * BOARD_WIDTH - 1
     action_size = BOARD_WIDTH * 4
-    hidden_size1 = 20
-    hidden_size2 = 20
+    hidden_size1 = 50
+    hidden_size2 = 40
 
     # Training parameters
     episodes = 1000000
     gamma = 0.99
-    alpha_w = 1e-3
-    alpha_theta = 1e-3
-    lmbda_w = 0.5
-    lmbda_theta = 0.5
+    alpha_w = 2e-4
+    alpha_theta = 2e-4
+    lmbda_w = 0.85
+    lmbda_theta = 0.85
 
     env = Tetris()
     model_value = QNetwork(input_size, hidden_size1, hidden_size2).to(device)
     model_pi = piNetwork(input_size, hidden_size1, hidden_size2, action_size).to(device)
 
-    # model_value.load_state_dict(torch.load('tetris_NN_value_model'))
-    # model_pi.load_state_dict(torch.load('tetris_NN_pi_model'))
+    model_value.load_state_dict(torch.load('tetris_NN_value_model'))
+    model_pi.load_state_dict(torch.load('tetris_NN_pi_model'))
 
     tetris_agent = Agent(env, model_value, model_pi)
 
