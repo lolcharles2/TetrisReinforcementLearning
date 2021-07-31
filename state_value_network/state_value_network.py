@@ -155,46 +155,47 @@ class Tetris:
     def reset(self):
         """
         Restarts the game with a blank board and new piece.
-        Returns: torch tensor
+        @rtype: torch tensor
             A tensor representing the state.
-
         """
         self.board = self.getBlankBoard()
         self.current_piece = self.getNewPiece()
-        return self.convertToFeatures(self.board)
+        return self.convertToFeatures(self.board)[0]
 
     def isOnBoard(self, x, y):
         """
         Checks if the position (x,y) is on the board.
-        Args:
-            x: int
-                The x position
-            y: int
-                The y position
+        @type x: int
+            The x position
+        @type y: int
+            The y position
 
-        Returns: Boolean
+        @rtype: Boolean
             If (x,y) is on the board.
 
         """
         return 0 <= x < BOARD_WIDTH and 0 <= y < BOARD_HEIGHT
 
     def getBlankBoard(self):
+        """
+        Returns a blank board.
+        """
         return np.zeros((BOARD_WIDTH, BOARD_HEIGHT))
 
     def isValidPosition(self, board, piece, x, y, rotation):
         """
         Checks if a piece has a valid position on the board.
-        Args:
-            shape: str
-                The shape of the tetris piece.
-            x: int
-                The x position of the piece.
-            y: int
-                The y position of the piece.
-            rotation: int
-                The rotation of the piece.
-
-        Returns: Boolean
+        @type board: np.array
+            A np array representing the state of the board.
+        @type piece: string
+            A string representing the shape of the piece.
+        @type x: int
+            The x position of the piece.
+        @type y: int
+            The y position of the piece.
+        @rotation: int
+            The rotation of the piece.
+        @rtype: Boolean
             If the piece has a valid position on the board.
 
         """
@@ -208,9 +209,27 @@ class Tetris:
         return True
 
     def getNewPiece(self):
+        """
+        Gets a new piece.
+        @rtype: string
+            A string representing the shape of the new piece.
+        """
         return random.choice(list(PIECES.keys()))
 
     def findXYCoordinate(self, piece, action, board):
+        """
+        Find the x and y coordinates to place a piece given an action.
+        @type piece: string
+            A letter representing the shape of the piece to be placed.
+        @type action: int
+            An integer representing the action.
+        @type board: np.array
+            A np array representing the state of the board.
+        @rtype: tuple[int]
+            A tuple (x, y, rotation) representing the (x,y) coordinates of the
+            piece if it were to be placed on the board as well as the rotation
+            of the piece. Note that this does not actually place the piece.
+        """
         rotation = action % 4
         left_margin, right_margin, top_margin = PIECES_MARGINS[piece][
             rotation % len(PIECES_MARGINS[piece])]
@@ -232,14 +251,13 @@ class Tetris:
     def transitionState(self, action):
         """
         Returns the next state given the action.
-        Args:
-            action: int
-                An integer representing the action chosen.
-                In total, there are BOARD_WIDTH x 4 actions, representing
-                choices in the x coordinate and rotation of the piece.
-                For a chosen x and rotation r, the action is 4 * x + r.
+        @type action: int
+            An integer representing the action chosen.
+            In total, there are BOARD_WIDTH x 4 actions, representing
+            choices in the x coordinate and rotation of the piece.
+            For a chosen x and rotation r, the action is 4 * x + r.
 
-        Returns: tuple
+        @rtype: tuple
             A tuple (reward, next_state, done) representing the reward, next state,
             and if the game has finished.
 
@@ -247,45 +265,78 @@ class Tetris:
         x, y, rotation = self.findXYCoordinate(self.current_piece, action, self.board)
 
         if y != None:
+            #self.board, completed_lines = self.clearLines(self.board)
+
             self.board = self.placeOnBoard(self.current_piece, x, y, rotation, self.board)
 
             self.current_piece = self.getNewPiece()
-            next_state = self.convertToFeatures(self.board)
-
-            self.board, lines_cleared = self.clearLines(self.board)
-            #delta_r, delta_c = self.countHoles(self.board)
+            next_state, self.board, completed_lines = self.convertToFeatures(self.board)
+            max_height, bumpiness = self.scoreBumpiness(self.board)
             #reward = lines_cleared**2 - delta_r - delta_c + 0.1
-            reward = 0.1 + (lines_cleared+1) ** 2
+            reward = 0.1 + completed_lines
 
-            return reward, next_state, False, lines_cleared
+            return reward, next_state, False, completed_lines
 
-        return -1, self.convertToFeatures(self.board), True, 0
+        return -1, self.convertToFeatures(self.board)[0], True, 0
 
     def getAllNextStates(self):
+        """
+        Get all of the next states corresponding to all possible next actions.
+        @rtype: list[tuple]
+            A list of tuples (action, features) representing the features of the
+            next state if an action is taken.
+        """
         data = []
         for action in range(BOARD_WIDTH * 4):
             temp_board = copy.deepcopy(self.board)
             x, y, rotation = self.findXYCoordinate(self.current_piece, action, temp_board)
             if y != None:
                 board = self.placeOnBoard(self.current_piece, x, y, rotation, temp_board)
-                #board, _ = self.clearLines(board)
-                features = self.convertToFeatures(board)
+                features, board, _ = self.convertToFeatures(board)
                 data.append((action, features))
         return data
+
+    def removeFromBoard(self, piece, x, y, rotation, board):
+        """
+        removes the current piece on the board.
+        @type piece: string
+            A letter representing the shape of the piece.
+        @type x: int
+            The x position of the piece.
+        @type y: int
+            The y position of the piece.
+        @type rotation: int
+            The rotation of the piece.
+        @type board: np.array
+            A np array representing the board.
+        @type: np.array
+            A np array representing the board after the piece has been removed.
+        """
+        template = PIECES[piece][rotation % len(PIECES[piece])]
+        for dx in range(TEMPLATE_WIDTH):
+            for dy in range(TEMPLATE_HEIGHT):
+                if template[dy][dx] == 'O':
+                    board_x_pos, board_y_pos = x + (dx - 2), y - (dy - 2)
+                    board[board_x_pos][board_y_pos] = 0.0
+
+        return board
 
     def placeOnBoard(self, piece, x, y, rotation, board):
         """
         Places the current piece on the board. Assumes that the piece
         is in a valid position.
-        Args:
-            x: int
-                The x position of the piece.
-            y: int
-                The y position of the piece.
-            rotation: int
-                The rotation of the piece.
-
-        Returns: None
+        @type piece: string
+            A letter representing the shape of the piece.
+        @type x: int
+            The x position of the piece.
+        @type y: int
+            The y position of the piece.
+        @type rotation: int
+            The rotation of the piece.
+        @type board: np.array
+            A np array representing the board.
+        @type: np.array
+            A np array representing the board after the piece has been placed.
         """
         template = PIECES[piece][rotation % len(PIECES[piece])]
         for dx in range(TEMPLATE_WIDTH):
@@ -299,7 +350,7 @@ class Tetris:
     def clearLines(self, board):
         """
         Removes completed lines from the board.
-        Returns: int
+        @rtype: int
             The number of lines removed.
 
         """
@@ -322,14 +373,28 @@ class Tetris:
                 y += 1  # move on to check next row up
         return board, lines_removed
 
+    def countCompleteLines(self, board):
+        """
+        Counts the number of completed lines.
+        @type board: np.array
+            An np array representing the board.
+        @rtype: int
+            The number of completed lines on the board.
+        """
+        completed_lines = 0
+        for y in range(BOARD_HEIGHT):
+            if self.isCompleteLine(y, board):
+                completed_lines += 1
+
+        return completed_lines
+
     def isCompleteLine(self, y, board):
         """
         Checks if the line at height y is complete.
-        Args:
-            y: int
-                The height of the row to check.
+        @type y: int
+            The height of the row to check.
 
-        Returns: Boolean
+        @rtype : Boolean
             True if the row is complete.
 
         """
@@ -342,66 +407,83 @@ class Tetris:
         Converts the current board position and falling piece to a
         list of features.
         The features consist of:
-            - 7 entries representing a 1 hot vector for the current piece.
-            - BOARD_WIDTH entries representing the maximum height for each column.
-            - BOARD_WIDTH - 1 entries representing the difference in heights between successive columns.
-        Returns: torch tensor
+            - Number of holes along the vertical and horizontal directions.
+            - Total height of all columns.
+            - Bumpiness.
+            - Number of completed lines on the board.
+        @rtype: torch tensor
             Torch tensor of the features described above. Values normalized to be between -1 and 1.
 
         """
-        delta_r, delta_c = self.countHoles(board)
-        max_height, bumpiness = self.scoreBumpiness(board)
+        board, completed_lines = self.clearLines(board)
+        holes = self.countHoles(board)
+        total_height, bumpiness = self.scoreBumpiness(board)
 
-        return torch.tensor([[delta_r, delta_c, max_height, bumpiness]], dtype=torch.float32).to(device)
+        return torch.tensor([[holes/BOARD_WIDTH,
+                              total_height/BOARD_WIDTH,
+                              bumpiness/BOARD_WIDTH, completed_lines*3]],
+                            dtype=torch.float32).to(device), board, completed_lines
 
     def countHoles(self, board):
         """
         Counts the number of transitions from filled to empty or vice
         versa in the rows and columns.
-        Returns: tuple[int]
+        @rtype: tuple[int]
             A tuple (delta_r, delta_c) representing the number of transitions
             from filled to empty squares or vice versa across rows and columns respectively.
 
         """
-        # Across rows:
-        delta_r = 0
-        for y in range(BOARD_HEIGHT):
-            for x in range(BOARD_WIDTH - 1):
-                if board[x][y] != board[x + 1][y]:
-                    delta_r += 1
 
-        # Across columns:
-        delta_c = 0
+        holes = 0
         for x in range(BOARD_WIDTH):
-            for y in range(BOARD_HEIGHT - 1):
-                if board[x][y] != board[x][y + 1]:
-                    delta_c += 1
+            loc = 0
+            for y in range(BOARD_HEIGHT-1, -1, -1):
+                if board[x][y] == 1.0:
+                    loc = y
+                    break
+            for y in range(loc):
+                if board[x][y] == 0.0:
+                    holes += 1
 
-        return delta_r, delta_c
+        return holes
 
     def scoreBumpiness(self, board):
-        heights = []
+        """
+        Calculates the "bumpiness" of the board, defined as the
+        sum of the absolute differences in heights of adjacent columns,
+        except for the largest difference.
 
+        @type board: np.array
+            A np array representing the board.
+        @rtype: tuple[int]
+            A tuple (max_height, bumpiness) representing the
+            maximum height of any column and the bumpiness.
+        """
+        heights = []
         for x in range(BOARD_WIDTH):
+            d = 0
             for y in range(BOARD_HEIGHT-1, -1, -1):
-                if board[x][y]: break
-            heights.append(y)
+                if board[x][y]:
+                    d = 1
+                    break
+            heights.append(y+d)
 
 
         diffs = [abs(heights[i]-heights[i-1]) for i in range(1, len(heights))]
         diffs.sort()
 
-        return max(heights), sum(diffs)-diffs[-1]
+        return sum(heights), sum(diffs)-diffs[-1]
+
 
 Transition = namedtuple('Transition', ('state', 'next_state', 'reward', 'done'))
+
 
 class ReplayMemory:
     def __init__(self, capacity):
         """
         Initializes the replay memory.
-        Args:
-            capacity: int
-                The capacity of the memory.
+        @type capacity: int
+            The capacity of the memory.
         """
         self.memory = deque([], maxlen=capacity)
 
@@ -414,16 +496,16 @@ class ReplayMemory:
         """
         Samples a batch of transitions of size batch_size
         randomly.
-        Args:
-            batch_size: int
-                The size of the batch.
-        Returns: list[tuple]
+        @type batch_size: int
+            The size of the batch.
+        @rtype: list[tuple]
             A list of the sampled transitions.
         """
         return random.sample(self.memory, batch_size)
 
     def __len__(self):
         return len(self.memory)
+
 
 class Agent:
     """ Agent object that uses the actor-critic network to find the
@@ -437,9 +519,11 @@ class Agent:
                 The Tetris environment.
             @type NN: NeuralNet
                 Neural network for computing the state-action values.
-            @type NN_pi: NeuralNet
-                Neural network for computing the policy.
-        """
+            @type optimizer: torch.optim
+                Torch optimizer object.
+            @type criterion: nn loss
+                Neural network loss function.
+            """
         self.env = env
         self.NN = NN
         self.optimizer = optimizer
@@ -464,50 +548,69 @@ class Agent:
 
         data = env.getAllNextStates()
 
-        for action, state in data:
-            value = self.NN(state).item()
-            if value > cur_best_val:
-                cur_best_val = value
-                cur_best_action = action
+        with torch.no_grad():
+            for action, state in data:
+                value = self.NN(state).item()
+                if value > cur_best_val:
+                    cur_best_val = value
+                    cur_best_action = action
 
         return cur_best_action
 
     def optimizeModel(self, memory, batch_size, gamma):
-        if len(memory) >= batch_size:
-            transitions = memory.sample(batch_size)
-            batch = Transition(*zip(*transitions))
+        """
+        Performs one step of mini-batch gradient descent.
 
-            state_batch = torch.cat(batch.state)
-            next_state_batch = torch.cat(batch.next_state)
-            reward_batch = torch.cat(batch.reward)
-            done_batch = torch.cat(batch.done)
+        @type memory: ReplayMemory
+            The replay memory from which to draw the experience.
+        @type batch_size: int
+            The mini-batch size.
+        @type gamma: float
+            The discount factor.
+        """
+        batch_size = min(len(memory), batch_size)
 
-            predictions = self.NN(state_batch)
+        # Sampling experiences
+        transitions = memory.sample(batch_size)
+        batch = Transition(*zip(*transitions))
 
-            with torch.no_grad():
-                targets = reward_batch + gamma * self.NN(next_state_batch) * done_batch
+        # Unpacking data
+        state_batch = torch.cat(batch.state)
+        next_state_batch = torch.cat(batch.next_state)
+        reward_batch = torch.cat(batch.reward)
+        done_batch = torch.cat(batch.done)
 
-            loss = self.criterion(predictions, targets)
+        # Predictions and targets
+        predictions = self.NN(state_batch)
+        with torch.no_grad():
+            targets = reward_batch + gamma * self.NN(next_state_batch) * (~done_batch)
 
-            loss.backward()
+        # Loss and gradient descent
+        loss = self.criterion(predictions, targets)
 
-            self.optimizer.step()
+        loss.backward()
 
-            self.optimizer.zero_grad()
+        self.optimizer.step()
 
-    def train(self, episodes, epsilon, gamma, memory_capacity, batch_size):
+        self.optimizer.zero_grad()
+
+    def train(self, episodes, epsilon_initial, epsilon_min, epsilon_stop_episode,
+              network_update_freq, gamma, memory_capacity, batch_size):
         """ Trains the agent using the actor-critic method with eligibility traces.
 
             @type episodes: int
                 The number of episodes to train.
             @type epsilon: float
                 The exploration probability.
+            @type network_update_freq: int
+                Number of episodes before copying the network
+                parameters to the delayed network.
             @type gamma: float
                 The discount factor.
-            @type alpha: float
-                Step size for the value network (critic).
-            @type lmbda: float
-                Trace decay parameter for the value network (critic).
+            @type memory_capacity: int
+                The capacity of the replay memory.
+            @type batch_size: int
+                Mini-batch size for training.
 
         """
         #% matplotlib
@@ -522,17 +625,23 @@ class Agent:
         memory = ReplayMemory(memory_capacity)
 
         tot_steps = 0
-
+        score = 0
         LC = 0
 
+        depsilon = (epsilon_initial-epsilon_min)/epsilon_stop_episode
+
         for episode in range(episodes):
+
+            if epsilon_initial > epsilon_min:
+                epsilon_initial -= depsilon
 
             if (episode + 1) % 10 == 0:
                 print(f'Episode {episode + 1}/{episodes} completed!')
                 torch.save(self.NN.state_dict(), 'tetris_NN_value_model')
                 print(f'Average steps per episode: {tot_steps / 10}')
                 print(f'Average lines cleared per episode: {LC / 10}')
-
+                print(f'Average reward per episode: {(score / 10):.2f}')
+                score = 0
                 tot_steps = 0
                 LC = 0
 
@@ -550,9 +659,10 @@ class Agent:
                 #ax.set_yticks(np.arange(0.5, BOARD_HEIGHT - 0.5, 1))
                 #fig.canvas.draw()
 
-                action = self.chooseAction(epsilon)
+                action = self.chooseAction(epsilon_initial)
 
                 reward, next_state, done, lines_cleared = self.env.transitionState(action)
+                score += reward
                 reward = torch.tensor([[reward]], device=device)
                 done = torch.tensor([[done]], device=device)
 
@@ -575,34 +685,38 @@ class QNetwork(nn.Module):
         self.l3 = nn.Linear(hidden_size2, 1)
 
     def forward(self, x):
-        x = torch.tanh(self.l1(x))
-        x = torch.tanh(self.l2(x))
+        x = torch.relu(self.l1(x))
+        x = torch.relu(self.l2(x))
         x = self.l3(x)
         return x
-
 
 
 if __name__ == "__main__":
     # Network parameters
     input_size = 4
-    hidden_size1 = 50
-    hidden_size2 = 40
+    hidden_size1 = 32
+    hidden_size2 = 16
 
     # Training parameters
     episodes = 1000000
     gamma = 0.95
-    learning_rate = 3e-4
-    epsilon = 0.1
+    learning_rate = 1e-2
+    epsilon_initial = 0.1
+    epsilon_min = 0.1
+    epsilon_stop_episode = 1500
     memory_capacity = 1000
-    batch_size = 16
+    batch_size = 128
+    network_update_freq = 100
 
     env = Tetris()
     model_value = QNetwork(input_size, hidden_size1, hidden_size2).to(device)
+
     criterion = nn.MSELoss()
-    optimizer = torch.optim.SGD(model_value.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(model_value.parameters(), lr=learning_rate)
 
     #model_value.load_state_dict(torch.load('tetris_NN_value_model'))
 
     tetris_agent = Agent(env, model_value, optimizer, criterion)
 
-    tetris_agent.train(episodes, epsilon, gamma, memory_capacity, batch_size)
+    tetris_agent.train(episodes, epsilon_initial, epsilon_min, epsilon_stop_episode,
+              network_update_freq, gamma, memory_capacity, batch_size)
