@@ -5,7 +5,11 @@ import matplotlib.pyplot as plt
 import random
 import time
 import copy
+from torch.utils.tensorboard import SummaryWriter
 from collections import namedtuple, deque
+
+writer = SummaryWriter("runs/state_value_network")
+
 
 #% matplotlib notebook
 
@@ -271,7 +275,7 @@ class Tetris:
 
             self.current_piece = self.getNewPiece()
             next_state, self.board, completed_lines = self.convertToFeatures(self.board)
-            max_height, bumpiness = self.scoreBumpiness(self.board)
+            #max_height, bumpiness = self.scoreBumpiness(self.board)
             #reward = lines_cleared**2 - delta_r - delta_c + 0.1
             reward = 0.1 + completed_lines
 
@@ -512,13 +516,15 @@ class Agent:
         optimal policy.
     """
 
-    def __init__(self, env, NN, optimizer, criterion):
+    def __init__(self, env, NN, NN_target, optimizer, criterion):
         """ Initializes the agent.
 
             @type env: Tetris
                 The Tetris environment.
             @type NN: NeuralNet
                 Neural network for computing the state-action values.
+            @type NN_target: NeuralNet
+                Target neural network for estimating state-action values.
             @type optimizer: torch.optim
                 Torch optimizer object.
             @type criterion: nn loss
@@ -526,6 +532,7 @@ class Agent:
             """
         self.env = env
         self.NN = NN
+        self.NN_target = NN_target
         self.optimizer = optimizer
         self.criterion = criterion
 
@@ -583,16 +590,22 @@ class Agent:
         # Predictions and targets
         predictions = self.NN(state_batch)
         with torch.no_grad():
-            targets = reward_batch + gamma * self.NN(next_state_batch) * (~done_batch)
+            targets = reward_batch + gamma * self.NN_target(next_state_batch) * (~done_batch)
+
 
         # Loss and gradient descent
         loss = self.criterion(predictions, targets)
+
+        x = loss.item()
 
         loss.backward()
 
         self.optimizer.step()
 
         self.optimizer.zero_grad()
+
+        return x
+
 
     def train(self, episodes, epsilon_initial, epsilon_min, epsilon_stop_episode,
               network_update_freq, gamma, memory_capacity, batch_size):
@@ -627,6 +640,7 @@ class Agent:
         tot_steps = 0
         score = 0
         LC = 0
+        running_loss = 0
 
         depsilon = (epsilon_initial-epsilon_min)/epsilon_stop_episode
 
@@ -635,12 +649,18 @@ class Agent:
             if epsilon_initial > epsilon_min:
                 epsilon_initial -= depsilon
 
+            if episode % network_update_freq == 0:
+                # Update target network
+                self.NN_target.load_state_dict(self.NN.state_dict())
+
             if (episode + 1) % 10 == 0:
                 print(f'Episode {episode + 1}/{episodes} completed!')
                 torch.save(self.NN.state_dict(), 'tetris_NN_value_model')
                 print(f'Average steps per episode: {tot_steps / 10}')
                 print(f'Average lines cleared per episode: {LC / 10}')
                 print(f'Average reward per episode: {(score / 10):.2f}')
+                writer.add_scalar('training loss', running_loss / 10.0, episode)
+                running_loss = 0
                 score = 0
                 tot_steps = 0
                 LC = 0
@@ -672,9 +692,11 @@ class Agent:
                 LC += lines_cleared
 
                 # Perform one step of batch gradient descent
-                self.optimizeModel(memory, batch_size, gamma)
+                if episode > 20:
+                    running_loss += self.optimizeModel(memory, batch_size, gamma)
 
                 state = next_state
+        writer.close()
 
 
 class QNetwork(nn.Module):
@@ -685,8 +707,8 @@ class QNetwork(nn.Module):
         self.l3 = nn.Linear(hidden_size2, 1)
 
     def forward(self, x):
-        x = torch.relu(self.l1(x))
-        x = torch.relu(self.l2(x))
+        x = torch.tanh(self.l1(x))
+        x = torch.tanh(self.l2(x))
         x = self.l3(x)
         return x
 
@@ -700,23 +722,24 @@ if __name__ == "__main__":
     # Training parameters
     episodes = 1000000
     gamma = 0.95
-    learning_rate = 1e-2
+    learning_rate = 1e-3
     epsilon_initial = 0.1
     epsilon_min = 0.1
-    epsilon_stop_episode = 1500
-    memory_capacity = 1000
-    batch_size = 128
-    network_update_freq = 100
+    epsilon_stop_episode = 2000
+    memory_capacity = 10000
+    batch_size = 256
+    network_update_freq = 200
 
     env = Tetris()
     model_value = QNetwork(input_size, hidden_size1, hidden_size2).to(device)
+    model_value_target = copy.deepcopy(model_value)
 
-    criterion = nn.MSELoss()
+    criterion = nn.HuberLoss()
     optimizer = torch.optim.Adam(model_value.parameters(), lr=learning_rate)
 
     #model_value.load_state_dict(torch.load('tetris_NN_value_model'))
 
-    tetris_agent = Agent(env, model_value, optimizer, criterion)
+    tetris_agent = Agent(env, model_value, model_value_target, optimizer, criterion)
 
     tetris_agent.train(episodes, epsilon_initial, epsilon_min, epsilon_stop_episode,
               network_update_freq, gamma, memory_capacity, batch_size)
