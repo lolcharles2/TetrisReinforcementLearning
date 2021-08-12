@@ -154,8 +154,6 @@ PIECES_MARGINS = {'S': [[1, 1, 0], [0, 1, 1]],
 class Tetris:
     def __init__(self):
         self.board = self.getBlankBoard()
-        self.pieces = list(PIECES.keys())
-        random.shuffle(self.pieces)
         self.current_piece = self.getNewPiece()
 
     def reset(self):
@@ -220,11 +218,7 @@ class Tetris:
         @rtype: string
             A string representing the shape of the new piece.
         """
-        piece = self.pieces.pop()
-        if not self.pieces:
-            self.pieces = list(PIECES.keys())
-            random.shuffle(self.pieces)
-        return piece
+        return random.choice(list(PIECES.keys()))
 
     def findXYCoordinate(self, piece, action, board):
         """
@@ -283,13 +277,11 @@ class Tetris:
             next_state, self.board, completed_lines, tot_height, bumpiness, holes = self.convertToFeatures(self.board)
 
             #reward = lines_cleared**2 - delta_r - delta_c + 0.1
-            reward = completed_lines**2/16
+            reward = (-0.51 * tot_height + 0.71 * completed_lines - 0.357 * holes - 0.184 * bumpiness)/(BOARD_HEIGHT*BOARD_WIDTH)
 
-            return reward, next_state, completed_lines
+            return reward, next_state, False, completed_lines
 
-        self.reset()
-
-        return -10, self.convertToFeatures(self.board)[0], 0
+        return -1, self.convertToFeatures(self.board)[0], True, 0
 
     def getAllNextStates(self):
         """
@@ -488,7 +480,7 @@ class Tetris:
         return sum(heights), sum(diffs)-diffs[-1]
 
 
-Transition = namedtuple('Transition', ('state', 'next_state', 'reward'))
+Transition = namedtuple('Transition', ('state', 'next_state', 'reward', 'done'))
 
 
 class ReplayMemory:
@@ -566,16 +558,14 @@ class Agent:
 
         with torch.no_grad():
             for action, state in data:
-                value = self.NN_target(state).item()
-                #holes, tot_height, bumpiness, completed_lines = state[0][0], state[0][1], state[0][2], 4*state[0][3]
-                #value = -0.510066 * tot_height + 0.760666 * completed_lines - 0.35663 * holes - 0.184483 * bumpiness
+                value = self.NN(state).item()
                 if value > cur_best_val:
                     cur_best_val = value
                     cur_best_action = action
 
         return cur_best_action
 
-    def optimizeModel(self, memory, batch_size):
+    def optimizeModel(self, memory, batch_size, gamma):
         """
         Performs one step of mini-batch gradient descent.
 
@@ -596,11 +586,13 @@ class Agent:
         state_batch = torch.cat(batch.state)
         next_state_batch = torch.cat(batch.next_state)
         reward_batch = torch.cat(batch.reward)
+        done_batch = torch.cat(batch.done)
 
         # Predictions and targets
-        predictions = self.NN(state_batch)
+        predictions = self.NN(next_state_batch)
         with torch.no_grad():
-            targets = reward_batch + self.NN_target(next_state_batch)
+            targets = reward_batch + gamma * self.NN(next_state_batch) * (~done_batch)
+
 
         # Loss and gradient descent
         loss = self.criterion(predictions, targets)
@@ -616,8 +608,8 @@ class Agent:
         return x
 
 
-    def train(self, steps, epsilon_initial, epsilon_min, epsilon_stop_episode,
-              network_update_freq, alpha_R, memory_capacity, batch_size):
+    def train(self, episodes, epsilon_initial, epsilon_min, epsilon_stop_episode,
+              network_update_freq, gamma, memory_capacity, batch_size):
         """ Trains the agent using the actor-critic method with eligibility traces.
 
             @type episodes: int
@@ -627,6 +619,8 @@ class Agent:
             @type network_update_freq: int
                 Number of episodes before copying the network
                 parameters to the delayed network.
+            @type gamma: float
+                The discount factor.
             @type memory_capacity: int
                 The capacity of the replay memory.
             @type batch_size: int
@@ -644,77 +638,71 @@ class Agent:
 
         memory = ReplayMemory(memory_capacity)
 
+        tot_steps = 0
         score = 0
         LC = 0
-        running_LC = 0
         running_loss = 0
 
         depsilon = (epsilon_initial-epsilon_min)/epsilon_stop_episode
 
-        R_bar = -0.3448
-
-        state = self.env.reset()
-
-        for step in range(steps):
+        for episode in range(episodes):
 
             if epsilon_initial > epsilon_min:
                 epsilon_initial -= depsilon
 
-            if step % network_update_freq == 0:
+            if episode % network_update_freq == 0:
                 # Update target network
                 self.NN_target.load_state_dict(self.NN.state_dict())
 
-            if (step + 1) % 1000 == 0:
-                print(f'Step {step + 1}/{episodes} completed!')
-                torch.save(self.NN.state_dict(), 'tetris_NN_value_model')
-                print(f'Average lines cleared per step: {LC / 1000}')
-                print(f'Average reward per step: {R_bar:.4f}')
-                print(f'Epsilon = {epsilon_initial:.4f}')
-                writer.add_scalar('training loss', running_loss / 1000.0, step)
-                writer.add_scalar('Average Reward Per Step', R_bar, step)
-                writer.add_histogram('l1_weight', self.NN.l1.weight, step)
-                writer.add_histogram('l1_bias', self.NN.l1.bias, step)
-                writer.add_histogram('l2_weight', self.NN.l2.weight, step)
-                writer.add_histogram('l2_bias', self.NN.l2.bias, step)
-                writer.add_histogram('l3_weight', self.NN.l3.weight, step)
-                writer.add_histogram('l3_bias', self.NN.l3.bias, step)
+            if (episode + 1) % 1 == 0:
+                print(f'Episode {episode + 1}/{episodes} completed!')
+                torch.save(self.NN.state_dict(), 'tetris_NN_policy_network')
+                print(f'Average steps per episode: {tot_steps / 1}')
+                print(f'Average lines cleared per episode: {LC / 1}')
+                print(f'Average reward per episode: {(score / (tot_steps+1)):.2f}')
+                writer.add_scalar('training loss', running_loss / 1.0, episode)
+                writer.add_histogram('l1_weight', self.NN.l1.weight, episode)
+                writer.add_histogram('l1_bias', self.NN.l1.bias, episode)
+                writer.add_histogram('l2_weight', self.NN.l2.weight, episode)
+                writer.add_histogram('l2_bias', self.NN.l2.bias, episode)
+                writer.add_histogram('l3_weight', self.NN.l3.weight, episode)
+                writer.add_histogram('l3_bias', self.NN.l3.bias, episode)
                 running_loss = 0
                 score = 0
+                tot_steps = 0
                 LC = 0
 
-            #time.sleep(0.2)
-            #plt.imshow(np.transpose(self.env.board)[::-1], cmap=plt.cm.binary, interpolation='none', origin='lower')
-            #ax = plt.gca()
-            #ax.set_xticks(np.arange(-0.5, BOARD_WIDTH - 0.5, 1))
-            #ax.set_yticks(np.arange(0.5, BOARD_HEIGHT - 0.5, 1))
-            #fig.canvas.draw()
+            state, done = self.env.reset(), False
 
-            action = self.chooseAction(epsilon_initial)
+            R_bar = 0
 
-            reward, next_state, lines_cleared = self.env.transitionState(action)
-            score += reward
+            while not done:
+                tot_steps += 1
 
-            if reward == -10:
-                #print(f'Episode finished, lines cleared: {running_LC}')
-                running_LC = 0
+                #time.sleep(0.2)
+                #plt.imshow(np.transpose(self.env.board)[::-1], cmap=plt.cm.binary, interpolation='none', origin='lower')
+                #ax = plt.gca()
+                #ax.set_xticks(np.arange(-0.5, BOARD_WIDTH - 0.5, 1))
+                #ax.set_yticks(np.arange(0.5, BOARD_HEIGHT - 0.5, 1))
+                #fig.canvas.draw()
 
-            with torch.no_grad():
-                delta = reward - R_bar + self.NN_target(next_state).item() - self.NN_target(state).item()
+                action = self.chooseAction(epsilon_initial)
 
-            reward = torch.tensor([[reward - R_bar]], device=device)
-            R_bar += delta * alpha_R
+                reward, next_state, done, lines_cleared = self.env.transitionState(action)
+                score += reward
+                reward = torch.tensor([[reward]], device=device)
+                done = torch.tensor([[done]], device=device)
 
-            # Saves the transition
-            memory.push(state, next_state, reward)
+                # Saves the transition
+                memory.push(state, next_state, reward, done)
 
-            LC += lines_cleared
-            running_LC += lines_cleared
+                LC += lines_cleared
 
-            # Perform one step of batch gradient descent
-            running_loss += self.optimizeModel(memory, batch_size)
+                # Perform one step of batch gradient descent
+                if episode > 20:
+                    running_loss += self.optimizeModel(memory, batch_size, gamma)
 
-            state = next_state
-
+                state = next_state
         writer.close()
 
 
@@ -739,19 +727,19 @@ if __name__ == "__main__":
     hidden_size2 = 8
 
     # Training parameters
-    episodes = 5000000
-    alpha_R = 1e-4
-    learning_rate = 1e-4
-    epsilon_initial = 1.0
-    epsilon_min = 0.0
-    epsilon_stop_episode = 5000000
-    memory_capacity = 5000
+    episodes = 1000000
+    gamma = 0.0
+    learning_rate = 3e-5
+    epsilon_initial = 0.00
+    epsilon_min = 0.00
+    epsilon_stop_episode = 2000
+    memory_capacity = 1000
     batch_size = 256
-    network_update_freq = 4000
+    network_update_freq = 200
 
     env = Tetris()
     model_value = QNetwork(input_size, hidden_size1, hidden_size2).to(device)
-    #model_value.load_state_dict(torch.load('tetris_NN_value_model'))
+    #model_value.load_state_dict(torch.load('tetris_NN_policy_network'))
 
     model_value_target = copy.deepcopy(model_value)
 
@@ -761,4 +749,4 @@ if __name__ == "__main__":
     tetris_agent = Agent(env, model_value, model_value_target, optimizer, criterion)
 
     tetris_agent.train(episodes, epsilon_initial, epsilon_min, epsilon_stop_episode,
-              network_update_freq, alpha_R, memory_capacity, batch_size)
+              network_update_freq, gamma, memory_capacity, batch_size)
